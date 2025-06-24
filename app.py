@@ -72,8 +72,9 @@ def local_css():
 local_css()
 
 # Helper functions for app pages
-def add_bg_from_url(url):
-    """Add background image from URL"""
+@st.cache_data(ttl=3600)
+def get_background_image(url):
+    """Get background image and cache it"""
     response = requests.get(url)
     img = Image.open(BytesIO(response.content))
     
@@ -81,6 +82,11 @@ def add_bg_from_url(url):
     buffered = BytesIO()
     img.save(buffered, format="JPEG", quality=50)
     img_str = base64.b64encode(buffered.getvalue()).decode()
+    return img_str
+
+def add_bg_from_url(url):
+    """Add background image from URL"""
+    img_str = get_background_image(url)
     
     st.markdown(
         f"""
@@ -111,7 +117,7 @@ def load_data():
     data_path = "data/movies_metadata.csv"
     processed_path = "data/processed_data.pkl"
     
-    @st.cache_data
+    @st.cache_data(ttl=86400, show_spinner="Loading movie data...")
     def get_data():
         # Check if processed data exists
         if os.path.exists(processed_path):
@@ -164,8 +170,16 @@ def load_data():
     
     return get_data()
 
-# Load data
-movies_df, similarity_matrix = load_data()
+# Eager loading of background image
+bg_url = "https://wallpaperaccess.com/full/3658597.jpg"
+try:
+    get_background_image(bg_url)
+except:
+    pass
+
+# Load data with a progress indicator
+with st.spinner("Loading movie recommendation system..."):
+    movies_df, similarity_matrix = load_data()
 
 # Initialize recommender system
 recommender = MovieRecommender(movies_df, similarity_matrix)
