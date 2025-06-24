@@ -14,7 +14,7 @@ class MovieRecommender:
         
     def get_content_based_recommendations(self, movie_title, n=10):
         """Get content-based recommendations similar to given movie"""
-        if self.movies_df is None:
+        if self.movies_df is None or len(self.movies_df) == 0:
             raise ValueError("No movie data available. Call set_data() first.")
             
         if self.similarity_matrix is None:
@@ -57,7 +57,7 @@ class MovieRecommender:
     
     def get_popularity_based_recommendations(self, n=10):
         """Get recommendations based on popularity"""
-        if self.movies_df is None:
+        if self.movies_df is None or len(self.movies_df) == 0:
             raise ValueError("No movie data available. Call set_data() first.")
             
         # Check for popularity column
@@ -83,11 +83,12 @@ class MovieRecommender:
             return qualified.sort_values('vote_average', ascending=False).head(n)
         
         else:
-            raise ValueError("No popularity metrics available in the dataset")
+            # Fallback to returning some random movies
+            return self.movies_df.sample(min(n, len(self.movies_df)))
     
     def get_genre_based_recommendations(self, genre, n=10):
         """Get recommendations based on genre"""
-        if self.movies_df is None:
+        if self.movies_df is None or len(self.movies_df) == 0:
             raise ValueError("No movie data available. Call set_data() first.")
             
         if 'genres' not in self.movies_df.columns:
@@ -109,7 +110,7 @@ class MovieRecommender:
     
     def get_hybrid_recommendations(self, movie_title, weight_content=0.7, weight_popularity=0.3, n=10):
         """Get hybrid recommendations combining content-based and popularity-based approaches"""
-        if self.movies_df is None:
+        if self.movies_df is None or len(self.movies_df) == 0:
             raise ValueError("No movie data available. Call set_data() first.")
             
         # Get content-based recommendations
@@ -187,8 +188,12 @@ class MovieRecommender:
     
     def get_recommendations_for_user(self, favorite_movies, favorite_genres=None, n=10):
         """Get personalized recommendations based on user's favorite movies and genres"""
-        if self.movies_df is None:
+        if self.movies_df is None or len(self.movies_df) == 0:
             raise ValueError("No movie data available. Call set_data() first.")
+            
+        # Check if there are any favorite movies or genres
+        if not favorite_movies and (not favorite_genres or len(favorite_genres) == 0):
+            return self.get_popularity_based_recommendations(n=n)
             
         # Start with an empty dataframe for recommendations
         all_recommendations = pd.DataFrame()
@@ -230,12 +235,13 @@ class MovieRecommender:
     
     def get_recent_recommendations(self, year_threshold=None, n=10):
         """Get recommendations for recent movies"""
-        if self.movies_df is None:
+        if self.movies_df is None or len(self.movies_df) == 0:
             raise ValueError("No movie data available. Call set_data() first.")
             
         # Check if year column exists
         if 'year' not in self.movies_df.columns:
-            raise ValueError("Year column not available in dataset")
+            # If no year column, fall back to popularity
+            return self.get_popularity_based_recommendations(n=n)
             
         # If no threshold provided, use the median year as threshold
         if year_threshold is None:
@@ -244,13 +250,23 @@ class MovieRecommender:
         # Filter recent movies
         recent_movies = self.movies_df[self.movies_df['year'] >= year_threshold]
         
+        # If no recent movies found, return some popular ones
+        if len(recent_movies) == 0:
+            return self.get_popularity_based_recommendations(n=n)
+            
         # Sort by popularity or vote average
         if 'popularity' in recent_movies.columns:
             return recent_movies.sort_values('popularity', ascending=False).head(n)
         elif 'vote_average' in recent_movies.columns and 'vote_count' in recent_movies.columns:
             # Only consider movies with a minimum number of votes
-            qualified = recent_movies[recent_movies['vote_count'] >= recent_movies['vote_count'].quantile(0.5)]
+            vote_threshold = recent_movies['vote_count'].quantile(0.3)  # Lower threshold for recent movies
+            qualified = recent_movies[recent_movies['vote_count'] >= vote_threshold]
+            
+            # If filtering removed too many movies, use original set
+            if len(qualified) < n:
+                qualified = recent_movies
+                
             return qualified.sort_values('vote_average', ascending=False).head(n)
         else:
-            # Return most recent if no popularity metrics
-            return recent_movies.sort_values('year', ascending=False).head(n)
+            # Return random selection if no popularity metrics
+            return recent_movies.sample(min(n, len(recent_movies)))

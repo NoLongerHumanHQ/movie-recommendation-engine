@@ -119,18 +119,46 @@ def load_data():
     
     @st.cache_data(ttl=86400, show_spinner="Loading movie data...")
     def get_data():
-        # Check if processed data exists
-        if os.path.exists(processed_path):
+        try:
+            # First try to load processed data
+            if os.path.exists(processed_path):
+                try:
+                    processor = DataProcessor()
+                    data = processor.load_processed_data(processed_path)
+                    st.success("Successfully loaded processed movie data")
+                    return data['movies_df'], data['tfidf_matrix']
+                except Exception as e:
+                    st.warning(f"Error loading processed data: {e}. Trying raw data...")
+            
+            # If processed data fails, try raw data
+            if os.path.exists(data_path):
+                try:
+                    # Process the data
+                    processor = DataProcessor(data_path)
+                    movies_df = processor.load_data()
+                    movies_df = processor.preprocess_data()
+                    similarity_matrix = processor.compute_similarity_matrix()
+                    
+                    # Save processed data
+                    processor.save_processed_data(processed_path)
+                    st.success("Successfully processed and saved movie data")
+                    return movies_df, similarity_matrix
+                except Exception as e:
+                    st.warning(f"Error processing data: {e}. Downloading sample data...")
+            
+            # If no data available, download sample data
+            st.info("Downloading sample TMDB dataset...")
+            
+            # Create data directory if it doesn't exist
+            os.makedirs(os.path.dirname(data_path), exist_ok=True)
+            
+            # Use TMDB 5000 sample (smaller dataset)
+            url = "https://raw.githubusercontent.com/Kamal2511/Movie-Recommender-System/main/tmdb_5000_movies.csv"
             try:
-                processor = DataProcessor()
-                data = processor.load_processed_data(processed_path)
-                return data['movies_df'], data['tfidf_matrix']
-            except Exception as e:
-                st.error(f"Error loading processed data: {e}")
-        
-        # If not, check if raw data exists
-        if os.path.exists(data_path):
-            try:
+                # Download and save
+                df = pd.read_csv(url)
+                df.to_csv(data_path, index=False)
+                
                 # Process the data
                 processor = DataProcessor(data_path)
                 movies_df = processor.load_data()
@@ -140,33 +168,18 @@ def load_data():
                 # Save processed data
                 processor.save_processed_data(processed_path)
                 
+                st.success("Successfully downloaded and processed movie data")
                 return movies_df, similarity_matrix
             except Exception as e:
-                st.error(f"Error processing data: {e}")
-        
-        # If no data available, download sample data
-        st.info("No data found. Downloading sample TMDB dataset...")
-        
-        # Use TMDB 5000 sample (smaller dataset)
-        url = "https://raw.githubusercontent.com/Kamal2511/Movie-Recommender-System/main/tmdb_5000_movies.csv"
-        try:
-            # Download and save
-            df = pd.read_csv(url)
-            os.makedirs(os.path.dirname(data_path), exist_ok=True)
-            df.to_csv(data_path, index=False)
-            
-            # Process the data
-            processor = DataProcessor(data_path)
-            movies_df = processor.preprocess_data()
-            similarity_matrix = processor.compute_similarity_matrix()
-            
-            # Save processed data
-            processor.save_processed_data(processed_path)
-            
-            return movies_df, similarity_matrix
+                st.error(f"Error downloading and processing data: {e}")
+                # Return empty dataframe and None similarity matrix as fallback
+                # This will allow the app to initialize and show an error message
+                empty_df = pd.DataFrame(columns=['id', 'title', 'overview', 'genres', 'year', 'vote_average', 'popularity'])
+                return empty_df, None
         except Exception as e:
-            st.error(f"Error downloading and processing data: {e}")
-            return None, None
+            st.error(f"Unexpected error during data loading: {e}")
+            empty_df = pd.DataFrame(columns=['id', 'title', 'overview', 'genres', 'year', 'vote_average', 'popularity'])
+            return empty_df, None
     
     return get_data()
 
@@ -181,112 +194,155 @@ except:
 with st.spinner("Loading movie recommendation system..."):
     movies_df, similarity_matrix = load_data()
 
+# Check if data was loaded successfully
+if movies_df is None or len(movies_df) == 0:
+    st.error("Failed to load movie data. Please try refreshing the page or contact support.")
+    # Initialize with empty data to avoid errors
+    movies_df = pd.DataFrame(columns=['id', 'title', 'overview', 'genres', 'year', 'vote_average', 'popularity'])
+    similarity_matrix = None
+
 # Initialize recommender system
-recommender = MovieRecommender(movies_df, similarity_matrix)
+recommender = MovieRecommender()
+recommender.set_data(movies_df, similarity_matrix)
+
+# Direct download of the data on app startup
+if movies_df is None or len(movies_df) == 0:
+    st.warning("Attempting to download data on startup...")
+    try:
+        import download_sample_data
+        download_sample_data.download_sample_data()
+        st.experimental_rerun()
+    except Exception as e:
+        st.error(f"Failed to download data: {e}")
 
 # Home page
 def show_home_page():
     st.title("🎬 Welcome to Movie Recommender")
     st.write("Discover movies you'll love based on your preferences!")
     
+    # Check if data is available
+    if movies_df is None or len(movies_df) == 0:
+        st.error("Movie data is not available. Please try reloading the page.")
+        
+        # Show download button
+        if st.button("Download Sample Movie Data"):
+            with st.spinner("Downloading and processing sample data..."):
+                try:
+                    import download_sample_data
+                    download_sample_data.download_sample_data()
+                    st.success("Sample data downloaded successfully!")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Error downloading sample data: {e}")
+        return
+    
     # Featured movies (top trending)
     st.header("📈 Trending Movies")
     with st.spinner("Loading trending movies..."):
-        trending_movies = recommender.get_popularity_based_recommendations(n=6)
-        
-        # Display in a grid
-        cols = st.columns(3)
-        for i, (_, movie) in enumerate(trending_movies.iterrows()):
-            with cols[i % 3]:
-                st.markdown(f"""
-                <div class="movie-card">
-                    <h3>{movie['title']}</h3>
-                """, unsafe_allow_html=True)
-                
-                # Show poster if available
-                if 'poster_path' in movie and movie['poster_path']:
-                    poster_url = f"https://image.tmdb.org/t/p/w500{movie['poster_path']}"
-                    st.image(poster_url, use_column_width=True)
-                elif 'id' in movie:
-                    poster_url = get_poster_url(movie['id'])
-                    if poster_url:
+        try:
+            trending_movies = recommender.get_popularity_based_recommendations(n=6)
+            
+            # Display in a grid
+            cols = st.columns(3)
+            for i, (_, movie) in enumerate(trending_movies.iterrows()):
+                with cols[i % 3]:
+                    st.markdown(f"""
+                    <div class="movie-card">
+                        <h3>{movie['title']}</h3>
+                    """, unsafe_allow_html=True)
+                    
+                    # Show poster if available
+                    if 'poster_path' in movie and movie['poster_path']:
+                        poster_url = f"https://image.tmdb.org/t/p/w500{movie['poster_path']}"
                         st.image(poster_url, use_column_width=True)
-                
-                # Add rating
-                if 'vote_average' in movie:
-                    st.markdown(f"<div class='rating'>{create_star_rating(movie['vote_average'])}</div>", unsafe_allow_html=True)
-                
-                # Add button to movie details
-                if st.button(f"More about {movie['title']}", key=f"trending_{movie['id']}"):
-                    st.session_state.selected_movie = movie
-                    st.session_state.page = 'movie_details'
-                    st.experimental_rerun()
+                    elif 'id' in movie:
+                        poster_url = get_poster_url(movie['id'])
+                        if poster_url:
+                            st.image(poster_url, use_column_width=True)
+                    
+                    # Add rating
+                    if 'vote_average' in movie:
+                        st.markdown(f"<div class='rating'>{create_star_rating(movie['vote_average'])}</div>", unsafe_allow_html=True)
+                    
+                    # Add button to movie details
+                    if st.button(f"More about {movie['title']}", key=f"trending_{movie['id']}"):
+                        st.session_state.selected_movie = movie
+                        st.session_state.page = 'movie_details'
+                        st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Error loading trending movies: {e}")
     
     # Recently released movies
     st.header("🆕 Latest Releases")
     with st.spinner("Loading latest releases..."):
-        recent_movies = recommender.get_recent_recommendations(n=6)
-        
-        # Display in a grid
-        cols = st.columns(3)
-        for i, (_, movie) in enumerate(recent_movies.iterrows()):
-            with cols[i % 3]:
-                st.markdown(f"""
-                <div class="movie-card">
-                    <h3>{movie['title']}</h3>
-                """, unsafe_allow_html=True)
-                
-                # Show poster if available
-                if 'poster_path' in movie and movie['poster_path']:
-                    poster_url = f"https://image.tmdb.org/t/p/w500{movie['poster_path']}"
-                    st.image(poster_url, use_column_width=True)
-                elif 'id' in movie:
-                    poster_url = get_poster_url(movie['id'])
-                    if poster_url:
+        try:
+            recent_movies = recommender.get_recent_recommendations(n=6)
+            
+            # Display in a grid
+            cols = st.columns(3)
+            for i, (_, movie) in enumerate(recent_movies.iterrows()):
+                with cols[i % 3]:
+                    st.markdown(f"""
+                    <div class="movie-card">
+                        <h3>{movie['title']}</h3>
+                    """, unsafe_allow_html=True)
+                    
+                    # Show poster if available
+                    if 'poster_path' in movie and movie['poster_path']:
+                        poster_url = f"https://image.tmdb.org/t/p/w500{movie['poster_path']}"
                         st.image(poster_url, use_column_width=True)
-                
-                # Add year
-                if 'year' in movie and not pd.isna(movie['year']):
-                    st.write(f"**Year:** {int(movie['year'])}")
-                
-                # Add button to movie details
-                if st.button(f"More about {movie['title']}", key=f"recent_{movie['id']}"):
-                    st.session_state.selected_movie = movie
-                    st.session_state.page = 'movie_details'
-                    st.experimental_rerun()
+                    elif 'id' in movie:
+                        poster_url = get_poster_url(movie['id'])
+                        if poster_url:
+                            st.image(poster_url, use_column_width=True)
+                    
+                    # Add year
+                    if 'year' in movie and not pd.isna(movie['year']):
+                        st.write(f"**Year:** {int(movie['year'])}")
+                    
+                    # Add button to movie details
+                    if st.button(f"More about {movie['title']}", key=f"recent_{movie['id']}"):
+                        st.session_state.selected_movie = movie
+                        st.session_state.page = 'movie_details'
+                        st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Error loading recent movies: {e}")
     
     # Top rated movies
     st.header("⭐ Top Rated Movies")
     with st.spinner("Loading top rated movies..."):
-        top_rated = recommender.movies_df.sort_values('vote_average', ascending=False).head(6)
-        
-        # Display in a grid
-        cols = st.columns(3)
-        for i, (_, movie) in enumerate(top_rated.iterrows()):
-            with cols[i % 3]:
-                st.markdown(f"""
-                <div class="movie-card">
-                    <h3>{movie['title']}</h3>
-                """, unsafe_allow_html=True)
-                
-                # Show poster if available
-                if 'poster_path' in movie and movie['poster_path']:
-                    poster_url = f"https://image.tmdb.org/t/p/w500{movie['poster_path']}"
-                    st.image(poster_url, use_column_width=True)
-                elif 'id' in movie:
-                    poster_url = get_poster_url(movie['id'])
-                    if poster_url:
+        try:
+            top_rated = recommender.movies_df.sort_values('vote_average', ascending=False).head(6)
+            
+            # Display in a grid
+            cols = st.columns(3)
+            for i, (_, movie) in enumerate(top_rated.iterrows()):
+                with cols[i % 3]:
+                    st.markdown(f"""
+                    <div class="movie-card">
+                        <h3>{movie['title']}</h3>
+                    """, unsafe_allow_html=True)
+                    
+                    # Show poster if available
+                    if 'poster_path' in movie and movie['poster_path']:
+                        poster_url = f"https://image.tmdb.org/t/p/w500{movie['poster_path']}"
                         st.image(poster_url, use_column_width=True)
-                
-                # Add rating
-                if 'vote_average' in movie:
-                    st.markdown(f"<div class='rating'>{create_star_rating(movie['vote_average'])}</div>", unsafe_allow_html=True)
-                
-                # Add button to movie details
-                if st.button(f"More about {movie['title']}", key=f"toprated_{movie['id']}"):
-                    st.session_state.selected_movie = movie
-                    st.session_state.page = 'movie_details'
-                    st.experimental_rerun()
+                    elif 'id' in movie:
+                        poster_url = get_poster_url(movie['id'])
+                        if poster_url:
+                            st.image(poster_url, width=300)
+                    
+                    # Add rating
+                    if 'vote_average' in movie:
+                        st.markdown(f"<div class='rating'>{create_star_rating(movie['vote_average'])}</div>", unsafe_allow_html=True)
+                    
+                    # Add button to movie details
+                    if st.button(f"More about {movie['title']}", key=f"toprated_{movie['id']}"):
+                        st.session_state.selected_movie = movie
+                        st.session_state.page = 'movie_details'
+                        st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Error loading top rated movies: {e}")
     
     # Quick access to other pages
     st.markdown("---")
@@ -312,6 +368,13 @@ def show_home_page():
 def show_search_page():
     st.title("🔍 Search Movies")
     
+    # Check if data is available
+    if movies_df is None or len(movies_df) == 0:
+        st.error("Movie data is not available. Please try reloading the page.")
+        if st.button("Retry Loading Data"):
+            st.experimental_rerun()
+        return
+    
     # Search by title
     search_query = st.text_input("Enter movie title to search:", "")
     
@@ -321,7 +384,7 @@ def show_search_page():
     with col1:
         # Get all unique genres
         all_genres = []
-        if 'genres' in movies_df.columns:
+        if movies_df is not None and 'genres' in movies_df.columns:
             for genre_list in movies_df['genres'].dropna():
                 try:
                     genres = json.loads(genre_list.replace("'", "\""))
@@ -337,8 +400,11 @@ def show_search_page():
     
     with col2:
         # Year range
-        years = movies_df['year'].dropna().astype(int)
-        min_year, max_year = int(years.min()), int(years.max())
+        years = movies_df['year'].dropna() if movies_df is not None and 'year' in movies_df.columns else pd.Series([2000, 2020])
+        if len(years) > 0:
+            min_year, max_year = int(years.min()), int(years.max())
+        else:
+            min_year, max_year = 2000, 2020
         year_range = st.slider("Year Range:", min_year, max_year, (min_year, max_year))
     
     with col3:
@@ -349,20 +415,23 @@ def show_search_page():
     if st.button("Search") or search_query:
         with st.spinner("Searching movies..."):
             # Start with title search
-            if search_query:
+            if search_query and movies_df is not None:
                 results = movies_df[movies_df['title'].str.contains(search_query, case=False, na=False)]
-            else:
+            elif movies_df is not None:
                 results = movies_df.copy()
+            else:
+                results = pd.DataFrame()
             
             # Apply genre filter
-            if selected_genre != "All Genres":
+            if selected_genre != "All Genres" and 'genres' in results.columns:
                 results = results[results['genres'].str.contains(selected_genre, case=False, na=False)]
             
             # Apply year filter
-            results = results[(results['year'] >= year_range[0]) & (results['year'] <= year_range[1])]
+            if 'year' in results.columns:
+                results = results[(results['year'] >= year_range[0]) & (results['year'] <= year_range[1])]
             
             # Apply rating filter
-            if min_rating > 0:
+            if min_rating > 0 and 'vote_average' in results.columns:
                 results = results[results['vote_average'] >= min_rating]
             
             # Display results
@@ -822,6 +891,13 @@ def show_preferences_page():
     st.title("⚙️ Preferences")
     st.write("Set your movie preferences to get personalized recommendations")
     
+    # Check if data is available
+    if movies_df is None or len(movies_df) == 0:
+        st.error("Movie data is not available. Please try reloading the page.")
+        if st.button("Retry Loading Data"):
+            st.experimental_rerun()
+        return
+    
     # Favorite Movies
     st.subheader("Your Favorite Movies")
     
@@ -846,14 +922,14 @@ def show_preferences_page():
     new_movie = st.text_input("Enter movie title:", key="new_favorite_movie")
     
     # Autocomplete suggestions
-    if new_movie:
+    if new_movie and movies_df is not None:
         suggestions = movies_df[movies_df['title'].str.contains(new_movie, case=False)]['title'].head(5).tolist()
         if suggestions:
             selected_suggestion = st.selectbox("Select from suggestions:", [""] + suggestions)
             if selected_suggestion:
                 new_movie = selected_suggestion
     
-    if st.button("Add to Favorites") and new_movie:
+    if st.button("Add to Favorites") and new_movie and movies_df is not None:
         # Check if movie exists in dataset
         if new_movie in movies_df['title'].values:
             if new_movie not in st.session_state.favorite_movies:
@@ -871,7 +947,7 @@ def show_preferences_page():
     
     # Get all unique genres
     all_genres = []
-    if 'genres' in movies_df.columns:
+    if movies_df is not None and 'genres' in movies_df.columns:
         for genre_list in movies_df['genres'].dropna():
             try:
                 genres = json.loads(genre_list.replace("'", "\""))
